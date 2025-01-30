@@ -28,7 +28,6 @@ class HostSetting:
         self.iteration_bits = iteration_bits
         self.iteration_bytes = np.ubyte(ceil(iteration_bits / 8))
         self.global_work_size = 1 << iteration_bits
-        self.local_work_size = 32
         self.key32 = self.generate_key32()
 
         self.kernel_source = kernel_source
@@ -65,22 +64,39 @@ def check_character(name: str, character: str):
         raise e
 
 
-def get_kernel_source(starts_with: str, ends_with: str, cl):
+def get_kernel_source(starts_with: str, ends_with: list, cl):
     PREFIX_BYTES = list(bytes(starts_with.encode()))
-    SUFFIX_BYTES = list(bytes(ends_with.encode()))
 
     with open(Path("opencl/kernel.cl"), "r") as f:
         source_lines = f.readlines()
+
+    suffix_offsets = []
+    suffix_lengths = []
+    all_suffix_bytes = []
+
+    current_offset = 0
+    for sfx in ends_with:
+        sb = list(sfx.encode())
+        suffix_lengths.append(len(sb))
+        suffix_offsets.append(current_offset)
+        all_suffix_bytes.extend(sb)
+        current_offset += len(sb)
 
     for i, s in enumerate(source_lines):
         if s.startswith("constant uchar PREFIX[]"):
             source_lines[i] = (
                 f"constant uchar PREFIX[] = {{{', '.join(map(str, PREFIX_BYTES))}}};\n"
             )
-        if s.startswith("constant uchar SUFFIX[]"):
+        if s.startswith("constant int SUFFIX_COUNT"):
             source_lines[i] = (
-                f"constant uchar SUFFIX[] = {{{', '.join(map(str, SUFFIX_BYTES))}}};\n"
+                f"constant int SUFFIX_COUNT = {len(ends_with)};\n"
             )
+        if s.startswith("constant int SUFFIX_LENGTHS[]"):
+            source_lines[i] = f"constant int SUFFIX_LENGTHS[] = {{{', '.join(map(str, suffix_lengths))}}};\n"
+        if s.startswith("constant int SUFFIX_OFFSETS[]"):
+            source_lines[i] = f"constant int SUFFIX_OFFSETS[] = {{{', '.join(map(str, suffix_offsets))}}};\n"
+        if s.startswith("constant uchar SUFFIXES[]"):
+            source_lines[i] = f"constant uchar SUFFIXES[] = {{{', '.join(map(str, all_suffix_bytes))}}};\n"
 
     source_str = "".join(source_lines)
 
@@ -211,7 +227,7 @@ class Searcher:
             self.command_queue,
             self.kernel,
             (global_worker_size,),
-            (self.setting.local_work_size,),
+            None,
         )
         cl._enqueue_read_buffer(self.command_queue, memobj_output, output).wait()
         logging.info(
@@ -280,16 +296,22 @@ def search_pubkey(
         click.echo(ctx.get_help())
         sys.exit(1)
 
+    suffix_list = []
+    if ends_with.strip():
+        suffix_list = [s.strip() for s in ends_with.split(",") if s.strip()]
+
+    for sf in suffix_list:
+        check_character("one-of-the-suffixes", sf)
+
     check_character("starts_with", starts_with)
-    check_character("ends_with", ends_with)
 
     logging.info(
-        f"Searching Solana pubkey that starts with '{starts_with}' and ends with '{ends_with}'"
+        f"Searching Solana pubkey that starts with '{starts_with}' and ends with '{suffix_list}'"
     )
     with Pool() as pool:
         gpu_counts = len(pool.apply(get_all_gpu_devices))
 
-    kernel_source = get_kernel_source(starts_with, ends_with, cl)
+    kernel_source = get_kernel_source(starts_with, suffix_list, cl)
     setting = HostSetting(kernel_source, iteration_bits)
     result_count = 0
 

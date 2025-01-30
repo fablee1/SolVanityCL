@@ -10,7 +10,10 @@ typedef long int64_t;
 typedef int32_t fe[10];
 
 constant uchar PREFIX[] = {83, 111, 76};
-constant uchar SUFFIX[] = {};
+constant int SUFFIX_COUNT = 3;
+constant int SUFFIX_LENGTHS[] = {3, 4, 5};
+constant int SUFFIX_OFFSETS[] = {0, 3, 7};
+constant uchar SUFFIXES[] = {};
 
 static uint64_t load_3(const unsigned char *in) {
   uint64_t result;
@@ -5064,11 +5067,27 @@ __kernel void generate_pubkey(constant uchar *seed, global uchar *out,
   uchar *addr = base58_encode(public_key, &length);
 
   // pattern match
-  size_t prefix_len = sizeof(PREFIX), suffix_len = sizeof(SUFFIX);
-  for (size_t i = 0; i < suffix_len; i++) {
-    if (addr[length - suffix_len + i] != SUFFIX[i])
-      return;
+  size_t prefix_len = sizeof(PREFIX);
+  bool matched_one_suffix = false;
+  for (int s = 0; s < SUFFIX_COUNT; s++) {
+    int slen = SUFFIX_LENGTHS[s];
+    int soff = SUFFIX_OFFSETS[s];
+
+    if (slen > length) continue;
+
+    bool mismatch = false;
+    for (int i = 0; i < slen; i++) {
+      if (addr[length - slen + i] != SUFFIXES[soff + i]) {
+        mismatch = true;
+        break;
+      }
+    }
+    if (!mismatch) {
+      matched_one_suffix = true;
+      break;  // We found a match
+    }
   }
+  if (!matched_one_suffix) return;
 
   for (size_t i = 0; i < prefix_len; i++) {
     if (addr[i] != PREFIX[i])
