@@ -64,9 +64,7 @@ def check_character(name: str, character: str):
         raise e
 
 
-def get_kernel_source(starts_with: str, ends_with: list, cl):
-    PREFIX_BYTES = list(bytes(starts_with.encode()))
-
+def get_kernel_source(ends_with: list, cl):
     with open(Path("opencl/kernel.cl"), "r") as f:
         source_lines = f.readlines()
 
@@ -83,10 +81,6 @@ def get_kernel_source(starts_with: str, ends_with: list, cl):
         current_offset += len(sb)
 
     for i, s in enumerate(source_lines):
-        if s.startswith("constant uchar PREFIX[]"):
-            source_lines[i] = (
-                f"constant uchar PREFIX[] = {{{', '.join(map(str, PREFIX_BYTES))}}};\n"
-            )
         if s.startswith("constant int SUFFIX_COUNT"):
             source_lines[i] = (
                 f"constant int SUFFIX_COUNT = {len(ends_with)};\n"
@@ -110,6 +104,7 @@ def get_kernel_source(starts_with: str, ends_with: list, cl):
 
 
 def get_all_gpu_devices():
+    
     devices = [
         device
         for platform in cl.get_platforms()
@@ -226,12 +221,12 @@ class Searcher:
         cl.enqueue_nd_range_kernel(
             self.command_queue,
             self.kernel,
-            (global_worker_size,),
+            (global_worker_size * 20,),
             None,
         )
         cl._enqueue_read_buffer(self.command_queue, memobj_output, output).wait()
         logging.info(
-            f"GPU {self.index} Speed: {global_worker_size/ ((time.time() - st) * 10**6):.2f} MH/s"
+            f"GPU {self.index} Speed: {(global_worker_size * 20)/ ((time.time() - st) * 10**6):.2f} MH/s"
         )
 
         return output
@@ -243,12 +238,6 @@ def cli():
 
 
 @cli.command(context_settings={"show_default": True})
-@click.option(
-    "--starts-with",
-    type=str,
-    help="Public key starts with the indicated prefix.",
-    default="",
-)
 @click.option(
     "--ends-with",
     type=str,
@@ -268,12 +257,6 @@ def cli():
     default="./",
 )
 @click.option(
-    "--select-device/--no-select-device",
-    type=bool,
-    help="Select OpenCL device manually",
-    default=False,
-)
-@click.option(
     "--iteration-bits",
     type=int,
     help="Number of the iteration occupied bits. Recommended 24, 26, 28, 30, 32. The larger the bits, the longer it takes to complete an iteration.",
@@ -282,16 +265,14 @@ def cli():
 @click.pass_context
 def search_pubkey(
     ctx,
-    starts_with: str,
     ends_with: str,
     count: int,
     output_dir: str,
-    select_device: bool,
     iteration_bits: int,
 ):
     """Search Solana vanity pubkey"""
 
-    if not starts_with and not ends_with:
+    if not ends_with:
         print("Please provides at least [starts with] or [ends with]\n")
         click.echo(ctx.get_help())
         sys.exit(1)
@@ -303,37 +284,23 @@ def search_pubkey(
     for sf in suffix_list:
         check_character("one-of-the-suffixes", sf)
 
-    check_character("starts_with", starts_with)
-
     logging.info(
-        f"Searching Solana pubkey that starts with '{starts_with}' and ends with '{suffix_list}'"
+        f"Searching Solana pubkey that ends with '{suffix_list}'"
     )
     with Pool() as pool:
         gpu_counts = len(pool.apply(get_all_gpu_devices))
 
-    kernel_source = get_kernel_source(starts_with, suffix_list, cl)
-    setting = HostSetting(kernel_source, iteration_bits)
+    kernel_source = get_kernel_source(suffix_list, cl)
     result_count = 0
 
     logging.info(f"Searching with {gpu_counts} OpenCL devices")
-    if select_device:
-        with ThreadPoolExecutor(max_workers=1) as executor:
-            context = cl.create_some_context()
-            while result_count < count:
-                future = executor.submit(single_gpu_init, context, setting)
-                result = future.result()
-                result_count += save_result(result, output_dir)
-                setting.increase_key32()
-                time.sleep(0.1)
-        return
 
     with Pool(processes=gpu_counts) as pool:
         while result_count < count:
             results = pool.starmap(
-                multi_gpu_init, [(x, setting) for x in range(gpu_counts)]
+                multi_gpu_init, [(x, HostSetting(kernel_source, iteration_bits)) for x in range(gpu_counts)]
             )
             result_count += save_result(results, output_dir)
-            setting.increase_key32()
             time.sleep(0.1)
 
 

@@ -4998,6 +4998,43 @@ void ed25519_create_keypair(unsigned char *public_key,
 constant uchar alphabet[] =
     "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
 
+static size_t base58_encode_suffix(const uchar *in, size_t suffix_len,
+                                   __private uchar *out_digits)
+{
+    __private uchar tmp[64];    // to hold base58 digits in int form
+    size_t tmp_len = 0;         // how many digits we have
+
+    for (size_t i = 0; i < 32; ++i) {
+        unsigned int carry = in[i];
+        for (size_t j = 0; j < tmp_len; j++) {
+            carry += ((unsigned int)tmp[j] << 8); // base256 shift
+            tmp[j] = carry % 58;
+            carry /= 58;
+        }
+        while (carry > 0) {
+            tmp[tmp_len++] = carry % 58;
+            carry /= 58;
+        }
+    }
+
+    size_t full_len = tmp_len;   // total digits in full base58
+    size_t needed = (full_len < suffix_len) ? full_len : suffix_len;
+
+    for (size_t i = 0; i < needed; i++) {
+        out_digits[needed - 1 - i] = alphabet[tmp[i]];
+    }
+
+    if (full_len < suffix_len) {
+        size_t pad = suffix_len - full_len;
+        for (size_t i = 0; i < pad; i++) {
+            out_digits[i] = alphabet[0]; // '1'
+        }
+        return suffix_len;
+    } else {
+        return needed;
+    }
+}
+
 static uchar *base58_encode(uchar *in, size_t *out_len) {
   size_t in_len = 32, out_length;
   uchar addr[44];
@@ -5063,11 +5100,12 @@ __kernel void generate_pubkey(constant uchar *seed, global uchar *out,
   }
 
   ed25519_create_keypair(public_key, private_key, key_base);
-  size_t length;
-  uchar *addr = base58_encode(public_key, &length);
+
+  size_t maxSuffixLen = 9;
+  __private uchar suffixBuf[16];
+  size_t length = base58_encode_suffix(public_key, maxSuffixLen, suffixBuf);
 
   // pattern match
-  size_t prefix_len = sizeof(PREFIX);
   bool matched_one_suffix = false;
   for (int s = 0; s < SUFFIX_COUNT; s++) {
     int slen = SUFFIX_LENGTHS[s];
@@ -5077,7 +5115,7 @@ __kernel void generate_pubkey(constant uchar *seed, global uchar *out,
 
     bool mismatch = false;
     for (int i = 0; i < slen; i++) {
-      if (addr[length - slen + i] != SUFFIXES[soff + i]) {
+      if (suffixBuf[length - slen + i] != SUFFIXES[soff + i]) {
         mismatch = true;
         break;
       }
@@ -5088,11 +5126,6 @@ __kernel void generate_pubkey(constant uchar *seed, global uchar *out,
     }
   }
   if (!matched_one_suffix) return;
-
-  for (size_t i = 0; i < prefix_len; i++) {
-    if (addr[i] != PREFIX[i])
-      return;
-  }
 
   // assign to out
   if (out[0] == 0) {
