@@ -8,7 +8,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from math import ceil
 from multiprocessing.pool import Pool
-
+import multiprocessing
 import pyopencl as cl
 
 os.environ["PYOPENCL_COMPILER_OUTPUT"] = "1"
@@ -22,7 +22,14 @@ from nacl.signing import SigningKey
 
 logging.basicConfig(level="INFO", format="[%(levelname)s %(asctime)s] %(message)s")
 
-
+def clamp_scalar(raw32: bytes) -> bytes:
+    # raw32 is your 32-byte random seed (or partial seed)
+    # We do the "Ed25519 clamp" bits:
+    arr = bytearray(raw32)
+    arr[0]  &= 248
+    arr[31] &= 63
+    arr[31] |= 64
+    return bytes(arr)
 class HostSetting:
     def __init__(self, kernel_source: str, iteration_bits: int) -> None:
         self.iteration_bits = iteration_bits
@@ -37,14 +44,15 @@ class HostSetting:
             secrets.token_bytes(32 - self.iteration_bytes)
             + b"\x00" * self.iteration_bytes
         )
-        key32 = np.array([x for x in token_bytes], dtype=np.ubyte)
+        clamped = clamp_scalar(token_bytes)
+        key32 = np.array([x for x in clamped], dtype=np.ubyte)
         return key32
 
     def increase_key32(self):
         current_number = int(bytes(self.key32).hex(), base=16)
         next_number = current_number + (1 << self.iteration_bits)
         _number_bytes = next_number.to_bytes(32, "big")
-        new_key32 = np.array([x for x in _number_bytes], dtype=np.ubyte)
+        new_key32 = np.array([x for x in clamp_scalar(_number_bytes)], dtype=np.ubyte)
         carry_index = 0 - self.iteration_bytes
         if (new_key32[carry_index] < self.key32[carry_index]) and new_key32[
             carry_index
@@ -111,6 +119,7 @@ def get_all_gpu_devices():
         for device in platform.get_devices(device_type=cl.device_type.GPU)
     ]
     return [d.int_ptr for d in devices]
+
 
 
 def single_gpu_init(context, setting):
@@ -320,4 +329,5 @@ def show_device():
 
 
 if __name__ == "__main__":
+    multiprocessing.set_start_method("spawn")
     cli()
