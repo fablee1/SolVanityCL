@@ -8,7 +8,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from math import ceil
 from multiprocessing.pool import Pool
-
+import multiprocessing
 import pyopencl as cl
 
 os.environ["PYOPENCL_COMPILER_OUTPUT"] = "1"
@@ -221,12 +221,12 @@ class Searcher:
         cl.enqueue_nd_range_kernel(
             self.command_queue,
             self.kernel,
-            (global_worker_size * 20,),
+            (global_worker_size * 100,),
             None,
         )
         cl._enqueue_read_buffer(self.command_queue, memobj_output, output).wait()
         logging.info(
-            f"GPU {self.index} Speed: {(global_worker_size * 20)/ ((time.time() - st) * 10**6):.2f} MH/s"
+            f"GPU {self.index} Speed: {(global_worker_size * 100)/ ((time.time() - st) * 10**6):.2f} MH/s"
         )
 
         return output
@@ -301,7 +301,6 @@ def search_pubkey(
                 multi_gpu_init, [(x, HostSetting(kernel_source, iteration_bits)) for x in range(gpu_counts)]
             )
             result_count += save_result(results, output_dir)
-            time.sleep(0.1)
 
 
 @cli.command(context_settings={"show_default": True})
@@ -320,4 +319,5 @@ def show_device():
 
 
 if __name__ == "__main__":
+    multiprocessing.set_start_method("spawn")
     cli()
